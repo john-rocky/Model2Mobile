@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "model2mobile"
+version = "0.1.0"
+description = "Evaluate whether your PyTorch vision model is actually ready for on-device deployment."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "coremltools>=7.0",
+    "click>=8.0",
+    "rich>=13.0",
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+model2mobile = "model2mobile.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["model2mobile*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

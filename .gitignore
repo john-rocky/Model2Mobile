@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.mlpackage
+*.mlmodel
+outputs/
+*.pt
+*.pth
+.venv/
+venv/
+.env
+.DS_Store
