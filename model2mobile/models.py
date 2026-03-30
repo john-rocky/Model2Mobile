@@ -190,3 +190,39 @@ class RunResult:
 
     def save_json(self, path: Path) -> None:
         path.write_text(self.to_json(), encoding="utf-8")
+
+
+@dataclass
+class OptimizationVariant:
+    """Result of a single optimization strategy trial."""
+
+    name: str                    # e.g. "int8", "palettize_4bit"
+    strategy: str                # human-readable description
+    model_size_mb: float
+    inference_mean_ms: float
+    inference_p95_ms: float
+    estimated_fps: float
+    size_reduction_pct: float    # vs original
+    speedup_pct: float           # vs original
+    error: str | None = None
+
+
+@dataclass
+class OptimizationResult:
+    """Aggregated results from trying multiple optimization strategies."""
+
+    original_size_mb: float
+    original_inference_ms: float
+    variants: list[OptimizationVariant] = field(default_factory=list)
+    recommended: str = ""            # name of best variant
+    recommendation_reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dict."""
+        return asdict(self)
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, default=str)
+
+    def save_json(self, path: Path) -> None:
+        path.write_text(self.to_json(), encoding="utf-8")

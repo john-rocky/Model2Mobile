@@ -165,11 +165,19 @@ def _benchmark_single_unit(
 
 
 def run_benchmark(coreml_path: str, config: RunConfig) -> BenchmarkResult:
-    """Run Core ML model benchmark on the local Mac.
+    """Run Core ML model benchmark.
+
+    If config.device == "iphone", delegates to the on-device benchmark runner.
+    Otherwise runs locally on the Mac.
 
     Measures preprocess, inference, postprocess, and end-to-end latency.
     Optionally compares across multiple compute units.
     """
+    if config.device == "iphone":
+        from model2mobile.benchmark.device import run_device_benchmark
+
+        return run_device_benchmark(coreml_path, config)
+
     try:
         image = _create_dummy_input(config.input_size)
 

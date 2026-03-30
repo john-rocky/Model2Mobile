@@ -41,6 +41,42 @@ def _load_builtin_recipes() -> list[Recipe]:
     except ImportError:
         pass
 
+    try:
+        from model2mobile.convert.recipes.yolo_detect_head import YOLODetectHeadRecipe
+        recipes.append(YOLODetectHeadRecipe())
+    except ImportError:
+        pass
+
+    try:
+        from model2mobile.convert.recipes.transformer_attention import TransformerAttentionRecipe
+        recipes.append(TransformerAttentionRecipe())
+    except ImportError:
+        pass
+
+    try:
+        from model2mobile.convert.recipes.custom_activations import CustomActivationsRecipe
+        recipes.append(CustomActivationsRecipe())
+    except ImportError:
+        pass
+
+    try:
+        from model2mobile.convert.recipes.group_norm_patch import GroupNormPatchRecipe
+        recipes.append(GroupNormPatchRecipe())
+    except ImportError:
+        pass
+
+    try:
+        from model2mobile.convert.recipes.deformable_conv import DeformableConvRecipe
+        recipes.append(DeformableConvRecipe())
+    except ImportError:
+        pass
+
+    try:
+        from model2mobile.convert.recipes.channel_last_fix import ChannelLastFixRecipe
+        recipes.append(ChannelLastFixRecipe())
+    except ImportError:
+        pass
+
     return recipes
 
 

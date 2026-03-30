@@ -22,6 +22,7 @@ class RunConfig:
     # Pipeline stage toggles
     benchmark_enabled: bool = True
     validation_enabled: bool = True
+    codegen_enabled: bool = True
 
     # Benchmark settings
     warmup_iterations: int = 5

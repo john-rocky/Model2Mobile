@@ -153,6 +153,26 @@ def run_pipeline(config: RunConfig) -> RunResult:
         output_dir=str(output_dir),
     )
 
+    # --- Swift code generation ---
+    swift_paths: list[Path] = []
+    if conversion.success and config.codegen_enabled:
+        from model2mobile.codegen.swift_generator import save_swift_code
+
+        try:
+            model_stem = Path(config.model_path).stem
+            swift_paths = save_swift_code(
+                coreml_path=conversion.coreml_path,  # type: ignore[arg-type]
+                model_name=model_stem,
+                output_dir=output_dir,
+            )
+            if swift_paths:
+                console.print(
+                    f"  [green]Generated {len(swift_paths)} Swift file(s)[/green]"
+                )
+        except Exception as exc:
+            logger.warning("Swift code generation failed: %s", exc)
+            console.print(f"  [yellow]Swift codegen skipped:[/yellow] {exc}")
+
     # Write all reports
     md_path = save_markdown(result, output_dir)
     json_paths = save_json_reports(result, output_dir)
@@ -186,7 +206,8 @@ def run_pipeline(config: RunConfig) -> RunResult:
         + (f"Issues: {len(diagnosis.diagnoses)}\n" if diagnosis.has_issues else "")
         + f"\nReport: {md_path}\n"
         f"HTML:   {html_path}\n"
-        f"JSON:   {json_paths.get('summary', '')}",
+        f"JSON:   {json_paths.get('summary', '')}"
+        + ("".join(f"\nSwift:  {p}" for p in swift_paths) if swift_paths else ""),
         title="Result",
         border_style=color,
     ))

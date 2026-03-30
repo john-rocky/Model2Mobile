@@ -7,6 +7,7 @@ build/
 .eggs/
 *.mlpackage
 *.mlmodel
+*.mlmodelc
 outputs/
 *.pt
 *.pth
@@ -14,3 +15,6 @@ outputs/
 venv/
 .env
 .DS_Store
+# Swift build artifacts
+.build/
+.swiftpm/
