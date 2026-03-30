@@ -43,6 +43,7 @@ class ModelInfo:
     architecture: str = "unknown"
     has_dynamic_shapes: bool = False
     op_summary: dict[str, int] = field(default_factory=dict)
+    task: str = "unknown"
 
 
 @dataclass
@@ -203,6 +204,7 @@ class RunResult:
             architecture=mi.get("architecture", "unknown"),
             has_dynamic_shapes=mi.get("has_dynamic_shapes", False),
             op_summary=mi.get("op_summary", {}),
+            task=mi.get("task", "unknown"),
         )
 
         # Conversion

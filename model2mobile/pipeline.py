@@ -103,10 +103,18 @@ def run_pipeline(config: RunConfig) -> RunResult:
             border_style="blue",
         ))
 
+    # Store the original task setting for display
+    original_task = config.task
+
     # --- Stage 1: Conversion ---
     if not quiet:
         console.print("\n[bold blue]Stage 1/4:[/bold blue] Converting to Core ML...")
     model_info, conversion = convert_model(config, output_dir)
+
+    # If task was "auto", convert_model will have resolved it.
+    detected_task = config.task
+    if original_task == "auto" and not quiet and detected_task != "auto":
+        console.print(f"  [cyan]Detected task: {detected_task}[/cyan]")
 
     if not quiet:
         if conversion.success:
@@ -221,6 +229,7 @@ def run_pipeline(config: RunConfig) -> RunResult:
                 coreml_path=conversion.coreml_path,  # type: ignore[arg-type]
                 model_name=model_stem,
                 output_dir=output_dir,
+                task=config.task,
             )
             if not quiet and swift_paths:
                 console.print(

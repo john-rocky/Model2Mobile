@@ -13,7 +13,7 @@ class RunConfig:
     """Configuration for a single pipeline run."""
 
     model_path: str = ""
-    task: str = "detect"
+    task: str = "auto"
     input_size: int = 640
     input_size_auto: bool = True  # auto-detect input size from model if --input-size not given
     output_dir: str = "outputs"

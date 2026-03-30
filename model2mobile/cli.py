@@ -61,7 +61,7 @@ def main() -> None:
 
 @main.command()
 @click.option("--model", "-m", required=True, help="Path or URL to PyTorch model (.pt / .pth / .torchscript)")
-@click.option("--task", "-t", default="detect", type=click.Choice(["detect"]), help="Model task (default: detect)")
+@click.option("--task", "-t", default="auto", type=click.Choice(["auto", "detect", "classify", "segment", "depth"]), help="Model task (default: auto)")
 @click.option("--input-size", "-s", default=None, type=int, help="Input image size (auto-detected if omitted)")
 @click.option("--output-dir", "-o", default="outputs", help="Output directory (default: outputs)")
 @click.option("--compute-unit", default="ALL", type=click.Choice(["ALL", "CPU_ONLY", "CPU_AND_GPU", "CPU_AND_NE"]), help="Compute unit for conversion")
@@ -141,7 +141,7 @@ def init() -> None:
     model_path = Prompt.ask("Model path or URL", default="./model.pt")
     model_path = _resolve_model(model_path)
 
-    task = Prompt.ask("Task", choices=["detect"], default="detect")
+    task = Prompt.ask("Task", choices=["auto", "detect", "classify", "segment", "depth"], default="auto")
     size_str = Prompt.ask("Input size (leave empty to auto-detect)", default="")
     input_size_auto = True
     input_size = 640

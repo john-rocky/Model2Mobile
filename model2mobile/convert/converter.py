@@ -201,6 +201,80 @@ def _analyze_model(
 
 
 # ---------------------------------------------------------------------------
+# Task inference
+# ---------------------------------------------------------------------------
+
+
+def _infer_task(model: nn.Module | torch.jit.ScriptModule, input_shape: tuple[int, ...]) -> str:
+    """Guess the task from model output shape.
+
+    Logic:
+    - (N, num_classes) with ndim==2 -> "classify"
+    - (N, C, H, W) where H,W are close to input H,W -> "segment"
+    - (N, 1, H, W) -> "depth"
+    - (N, boxes, 5+) or multiple outputs -> "detect"
+    - Default: "classify"
+    """
+    try:
+        dummy = torch.randn(*input_shape)
+        with torch.no_grad():
+            raw = model(dummy)
+    except Exception:
+        return "classify"
+
+    # Normalize output to a list of tensors
+    tensors: list[torch.Tensor] = []
+    if isinstance(raw, torch.Tensor):
+        tensors = [raw]
+    elif isinstance(raw, (tuple, list)):
+        for item in raw:
+            if isinstance(item, torch.Tensor):
+                tensors.append(item)
+            elif isinstance(item, dict):
+                for v in item.values():
+                    if isinstance(v, torch.Tensor):
+                        tensors.append(v)
+    elif isinstance(raw, dict):
+        for v in raw.values():
+            if isinstance(v, torch.Tensor):
+                tensors.append(v)
+
+    if not tensors:
+        return "classify"
+
+    # Multiple outputs often indicate detection
+    if len(tensors) > 2:
+        return "detect"
+
+    input_h, input_w = input_shape[2], input_shape[3]
+
+    for t in tensors:
+        shape = t.shape
+
+        # 2-D output: (N, num_classes) -> classification
+        if t.ndim == 2 and shape[1] > 1:
+            return "classify"
+
+        # 4-D output: check spatial dims
+        if t.ndim == 4:
+            n, c, h, w = shape
+            # (N, 1, H, W) -> depth estimation
+            if c == 1:
+                return "depth"
+            # (N, C, H, W) where H,W are close to input -> segmentation
+            h_ratio = h / input_h
+            w_ratio = w / input_w
+            if 0.25 <= h_ratio <= 1.5 and 0.25 <= w_ratio <= 1.5:
+                return "segment"
+
+        # 3-D output: (N, boxes, 5+) -> detection
+        if t.ndim == 3 and shape[2] >= 5:
+            return "detect"
+
+    return "classify"
+
+
+# ---------------------------------------------------------------------------
 # Internal: trace + convert + save
 # ---------------------------------------------------------------------------
 
@@ -273,9 +347,16 @@ def convert_model(
             console.print(f"  [cyan]Auto-detected input size: {input_size}[/cyan]")
     input_shape = (1, 3, input_size, input_size)
 
+    # --- Infer task if set to "auto" ---
+    if config.task == "auto":
+        detected_task = _infer_task(model, input_shape)
+        config.task = detected_task
+        console.print(f"  [cyan]Auto-detected task: {detected_task}[/cyan]")
+
     # --- Analyze ---
     architecture = _detect_architecture(model)
     info = _analyze_model(model, str(model_path), input_shape)
+    info.task = config.task
     logger.info(
         "Model: %s | params=%d | size=%.1f MB",
         info.architecture, info.parameter_count, info.estimated_size_mb,
