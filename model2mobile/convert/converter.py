@@ -47,6 +47,99 @@ def _pip_install(package: str) -> bool:
         return False
 
 
+def _try_load_rfdetr(model_path: Path) -> nn.Module | None:
+    """Try to load an RF-DETR model via the rfdetr or peaceofcake package.
+
+    RF-DETR models are checkpoint files that require the rfdetr package to
+    construct the architecture before loading weights.  A plain torch.load()
+    will only produce a state_dict, not a runnable model.
+    """
+    stem = model_path.stem.lower()
+    if "rfdetr" not in stem and "rf-detr" not in stem and "rf_detr" not in stem:
+        return None
+
+    # Try peaceofcake first (unified API)
+    try:
+        from peaceofcake import RFDETR
+        model_wrapper = RFDETR(str(model_path))
+        model = model_wrapper.model
+        model.cpu().eval()
+        model.export()
+        logger.info("Loaded RF-DETR via peaceofcake")
+        return model
+    except Exception:
+        pass
+
+    # Try rfdetr package directly
+    try:
+        from rfdetr import RFDETRNano, RFDETRSmall, RFDETRMedium, RFDETRLarge
+        size_map = {"nano": RFDETRNano, "small": RFDETRSmall, "medium": RFDETRMedium, "large": RFDETRLarge}
+        for name, cls in size_map.items():
+            if name[0] in stem or name in stem:
+                obj = cls(pretrain_weights=str(model_path))
+                model = obj.model.model
+                model.cpu().eval()
+                model.export()
+                logger.info("Loaded RF-DETR-%s via rfdetr", name)
+                return model
+    except Exception:
+        pass
+
+    return None
+
+
+def _try_load_dfine(model_path: Path) -> nn.Module | None:
+    """Try to load a D-FINE model via peaceofcake.
+
+    Returns a ready-to-trace wrapper that outputs flat tensors
+    (confidence, coordinates) — the same format as the peaceofcake exporter.
+    """
+    stem = model_path.stem.lower()
+    if "dfine" not in stem:
+        return None
+
+    try:
+        from peaceofcake import DFINE
+        model_wrapper = DFINE(str(model_path))
+        # Use peaceofcake's own exporter setup for proper model preparation
+        model_wrapper.model.cpu().eval()
+        exporter_cls = model_wrapper.task_map["detect"]["exporter"]
+        exporter = exporter_cls(model_wrapper, {})
+        # Get the deploy-ready model + postprocessor via the exporter's helper
+        model, postprocessor = exporter._get_model_and_postprocessor()
+
+        import torch.nn.functional as F
+
+        class _Wrapper(nn.Module):
+            def __init__(self, m, pp):
+                super().__init__()
+                self.model = m.deploy()
+                pp.deploy()
+                self.use_focal_loss = pp.use_focal_loss
+
+            def forward(self, images):
+                outputs = self.model(images)
+                logits = outputs["pred_logits"]
+                boxes = outputs["pred_boxes"]
+                if self.use_focal_loss:
+                    confidence = F.sigmoid(logits)
+                else:
+                    confidence = F.softmax(logits, dim=-1)[:, :, :-1]
+                return confidence.squeeze(0), boxes.squeeze(0)
+
+        wrapper = _Wrapper(model, postprocessor).eval()
+
+        # Fix project tensor for CoreML linear op
+        decoder = wrapper.model.decoder.decoder
+        if hasattr(decoder, "project") and decoder.project.dim() == 1:
+            decoder.project = nn.Parameter(decoder.project.unsqueeze(0), requires_grad=False)
+
+        logger.info("Loaded D-FINE via peaceofcake (deploy + wrapped)")
+        return wrapper
+    except Exception:
+        return None
+
+
 def _load_model(model_path: Path) -> nn.Module | torch.jit.ScriptModule:
     suffix = model_path.suffix.lower()
 
@@ -63,6 +156,13 @@ def _load_model(model_path: Path) -> nn.Module | torch.jit.ScriptModule:
         return model
     except Exception:
         pass
+
+    # Try specialised loaders for models that need their package to construct
+    # the architecture (RF-DETR needs rfdetr, D-FINE needs peaceofcake).
+    for loader in (_try_load_rfdetr, _try_load_dfine):
+        model = loader(model_path)
+        if model is not None:
+            return model
 
     # Pickle-based loading with auto-install of missing packages.
     # Models downloaded from the internet (e.g. YOLO, timm) are often saved
@@ -372,46 +472,52 @@ def convert_model(
         names = [r.recipe_name for r in pre_recipes]
         console.print(f"  [cyan]Applied recipes: {', '.join(names)}[/cyan]")
 
-    # --- Attempt 1: trace + convert ---
+    # --- Attempt conversion with retry loop ---
+    # Some models (e.g. DINOv2-based RF-DETR) trigger multiple coremltools
+    # bugs sequentially.  Each retry applies new error-triggered recipes.
+    _MAX_RECIPE_RETRIES = 3
     applied_recipes = list(pre_recipes)
-    start = time.perf_counter()
-    try:
-        coreml_model = _trace_and_convert(model, input_shape, compute_unit_enum)
-        conversion_time = time.perf_counter() - start
-    except Exception as first_exc:
-        first_time = time.perf_counter() - start
-        first_error = str(first_exc)
-        first_traceback = traceback.format_exc()
+    total_time = 0.0
+    last_error = ""
+    last_traceback = ""
+    coreml_model = None
 
-        # --- Retry with error-triggered recipes ---
-        retry_recipes = apply_recipes(model, architecture, error=first_error)
-        if not retry_recipes:
-            return info, ConversionResult(
-                success=False,
-                compute_unit=config.compute_unit,
-                conversion_time_s=round(first_time, 3),
-                error_message=f"Core ML conversion failed: {first_error}",
-                raw_error=first_traceback,
-            )
-
-        applied_recipes.extend(retry_recipes)
-        names = [r.recipe_name for r in retry_recipes]
-        console.print(f"  [yellow]Conversion failed, retrying with recipes: {', '.join(names)}[/yellow]")
-
+    for attempt in range(_MAX_RECIPE_RETRIES + 1):
         start = time.perf_counter()
         try:
             coreml_model = _trace_and_convert(model, input_shape, compute_unit_enum)
-            conversion_time = time.perf_counter() - start
-        except Exception as retry_exc:
-            conversion_time = time.perf_counter() - start
-            return info, ConversionResult(
-                success=False,
-                compute_unit=config.compute_unit,
-                conversion_time_s=round(first_time + conversion_time, 3),
-                error_message=f"Core ML conversion failed after recipes: {retry_exc}",
-                raw_error=traceback.format_exc(),
-                warnings=[f"Initial error: {first_error}"],
+            total_time += time.perf_counter() - start
+            break
+        except Exception as exc:
+            total_time += time.perf_counter() - start
+            last_error = str(exc)
+            last_traceback = traceback.format_exc()
+
+            if attempt >= _MAX_RECIPE_RETRIES:
+                break
+
+            # Apply error-triggered recipes for the new error
+            retry_recipes = apply_recipes(model, architecture, error=last_error)
+            if not retry_recipes:
+                break
+
+            applied_recipes.extend(retry_recipes)
+            names = [r.recipe_name for r in retry_recipes]
+            console.print(
+                f"  [yellow]Attempt {attempt + 1} failed, retrying with: {', '.join(names)}[/yellow]"
             )
+
+    if coreml_model is None:
+        return info, ConversionResult(
+            success=False,
+            compute_unit=config.compute_unit,
+            conversion_time_s=round(total_time, 3),
+            error_message=f"Core ML conversion failed: {last_error}",
+            raw_error=last_traceback,
+            warnings=[f"Tried {len(applied_recipes)} recipes"],
+        )
+
+    conversion_time = total_time
 
     # --- Save ---
     try:

@@ -68,6 +68,62 @@ _ERROR_RULES: list[tuple[re.Pattern[str], DiagnosisCategory, str]] = [
         DiagnosisCategory.UNSUPPORTED_OP,
         "Model returns non-tensor output (e.g. List[Dict]). The detection_unwrap recipe handles this.",
     ),
+    # D-FINE dict output (pred_logits / pred_boxes) not directly traceable
+    (
+        re.compile(r"pred_logits|pred_boxes|TracerWarning.*dict", re.IGNORECASE),
+        DiagnosisCategory.UNSUPPORTED_OP,
+        "D-FINE model outputs a dict (pred_logits, pred_boxes). "
+        "The dfine_export recipe wraps this into flat tensor outputs with sigmoid/softmax.",
+    ),
+    # D-FINE project tensor dimension mismatch
+    (
+        re.compile(r"project.*dimension|linear.*1.d|unsqueeze.*project", re.IGNORECASE),
+        DiagnosisCategory.UNSUPPORTED_OP,
+        "D-FINE decoder.project is 1-D but CoreML linear op requires 2-D. "
+        "The dfine_export recipe unsqueezes the tensor.",
+    ),
+    # Core ML rank limitation (DINOv2 / deformable attention rank-6 tensors)
+    (
+        re.compile(r"only supports tensors with rank\s*<=\s*5", re.IGNORECASE),
+        DiagnosisCategory.UNSUPPORTED_OP,
+        "Model produces rank-6+ intermediate tensors (e.g. deformable attention). "
+        "The dinov2_deformable_attn recipe restructures these to rank ≤ 5.",
+    ),
+    # coremltools _cast bug (DINOv2 torch_int producing multi-element const)
+    (
+        re.compile(r"0-dimensional arrays can be converted to Python scalars", re.IGNORECASE),
+        DiagnosisCategory.UNSUPPORTED_OP,
+        "A traced int() op produced a multi-element array that coremltools cannot fold. "
+        "The coremltools_compat recipe patches the _cast converter.",
+    ),
+    # coremltools meshgrid with non-1D inputs (traced linspace)
+    (
+        re.compile(r"meshgrid received non-1d tensor", re.IGNORECASE),
+        DiagnosisCategory.UNSUPPORTED_OP,
+        "torch.meshgrid inputs are non-1D after tracing. "
+        "The coremltools_compat recipe flattens inputs before grid construction.",
+    ),
+    # coremltools split_sizes must be const
+    (
+        re.compile(r"split_sizes.*must be const", re.IGNORECASE),
+        DiagnosisCategory.DYNAMIC_SHAPE,
+        "Dynamic split sizes from traced tensor shapes. "
+        "The dinov2_deformable_attn recipe replaces dynamic splits with static slicing.",
+    ),
+    # coremltools tensor_assign shape mismatch
+    (
+        re.compile(r"updates tensor should have shape", re.IGNORECASE),
+        DiagnosisCategory.OUTPUT_SHAPE_MISMATCH,
+        "In-place tensor copy has mismatched update shape. "
+        "The coremltools_compat recipe relaxes the type-inference check.",
+    ),
+    # torch.export data-dependent guard failure
+    (
+        re.compile(r"Could not guard on data-dependent expression", re.IGNORECASE),
+        DiagnosisCategory.DYNAMIC_SHAPE,
+        "torch.export failed on a data-dependent assertion (e.g. deformable attention spatial shape check). "
+        "Use torch.jit.trace with model-specific patches instead.",
+    ),
     # Model loading issues
     (
         re.compile(r"state_dict|not a runnable model|Unexpected.*type", re.IGNORECASE),
@@ -86,13 +142,16 @@ _SUGGESTED_STEPS: dict[DiagnosisCategory, list[str]] = {
     DiagnosisCategory.UNSUPPORTED_OP: [
         "Identify the unsupported op in the error message.",
         "Replace the op with an equivalent supported op or custom implementation.",
-        "Consider simplifying the model head or using torch.onnx.export as intermediate.",
+        "For DINOv2/deformable attention models: the dinov2_deformable_attn and coremltools_compat recipes handle most issues automatically.",
+        "For rank > 5 errors: restructure intermediate tensors to merge dimensions (e.g. merge n_levels and n_points in deformable attention).",
         "Update coremltools to the latest version.",
     ],
     DiagnosisCategory.DYNAMIC_SHAPE: [
         "Use a fixed input shape (e.g., ct.TensorType(shape=(1,3,640,640))).",
         "Replace data-dependent control flow with static alternatives.",
         "Avoid using torch.Tensor.size() inside forward() for branching.",
+        "For deformable attention: replace dynamic tensor.split() with static slicing using known spatial dimensions.",
+        "For torch.export failures: use torch.jit.trace instead and patch data-dependent assertions.",
     ],
     DiagnosisCategory.OUTPUT_SHAPE_MISMATCH: [
         "Verify the expected output shape from the PyTorch model.",

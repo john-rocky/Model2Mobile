@@ -77,6 +77,24 @@ def _load_builtin_recipes() -> list[Recipe]:
     except ImportError:
         pass
 
+    try:
+        from model2mobile.convert.recipes.dfine_export import DFINEExportRecipe
+        recipes.append(DFINEExportRecipe())
+    except ImportError:
+        pass
+
+    try:
+        from model2mobile.convert.recipes.dinov2_deformable_attn import DINOv2DeformableAttnRecipe
+        recipes.append(DINOv2DeformableAttnRecipe())
+    except ImportError:
+        pass
+
+    try:
+        from model2mobile.convert.recipes.coremltools_compat import CoreMLToolsCompatRecipe
+        recipes.append(CoreMLToolsCompatRecipe())
+    except ImportError:
+        pass
+
     return recipes
 
 
