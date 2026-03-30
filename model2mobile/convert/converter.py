@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import traceback
+import warnings
 from collections import Counter
 from pathlib import Path
 
@@ -213,7 +214,9 @@ def _trace_and_convert(
     if isinstance(model, torch.jit.ScriptModule):
         traced = model
     else:
-        traced = torch.jit.trace(model, dummy_input)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            traced = torch.jit.trace(model, dummy_input)
     return ct.convert(
         traced,
         inputs=[ct.TensorType(shape=input_shape)],

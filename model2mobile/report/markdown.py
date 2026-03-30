@@ -7,6 +7,7 @@ from pathlib import Path
 from model2mobile.models import (
     BenchmarkResult,
     LatencyStats,
+    OptimizationResult,
     ReadinessState,
     RunResult,
     ValidationResult,
@@ -223,6 +224,36 @@ def _section_diagnosis(result: RunResult) -> str:
     return "\n".join(lines)
 
 
+def _section_optimization(optimization: OptimizationResult) -> str:
+    lines: list[str] = ["## Optimization Results\n"]
+
+    lines.append(f"**Original:** {optimization.original_size_mb:.1f} MB, "
+                 f"{optimization.original_inference_ms:.1f}ms inference\n")
+
+    if optimization.recommended and optimization.recommended != "none":
+        lines.append(f"**Recommended:** `{optimization.recommended}` - "
+                     f"{optimization.recommendation_reason}\n")
+    else:
+        lines.append(f"**Recommendation:** {optimization.recommendation_reason}\n")
+
+    if optimization.variants:
+        lines.append("| Variant | Size (MB) | Size Reduction | Inference (ms) | P95 (ms) | FPS | Speedup | Status |")
+        lines.append("|---------|-----------|----------------|----------------|----------|-----|---------|--------|")
+        for v in optimization.variants:
+            is_rec = v.name == optimization.recommended
+            if v.error:
+                lines.append(f"| {v.name} | - | - | - | - | - | - | FAILED |")
+            else:
+                status = "**RECOMMENDED**" if is_rec else "OK"
+                lines.append(
+                    f"| {v.name} | {v.model_size_mb:.1f} | {v.size_reduction_pct:+.1f}% | "
+                    f"{v.inference_mean_ms:.2f} | {v.inference_p95_ms:.2f} | "
+                    f"{v.estimated_fps:.1f} | {v.speedup_pct:+.1f}% | {status} |"
+                )
+
+    return "\n".join(lines)
+
+
 def _section_suggestions(result: RunResult) -> str:
     lines: list[str] = ["## Full Suggestions\n"]
     if not result.suggestions:
@@ -264,6 +295,9 @@ def generate_markdown(result: RunResult) -> str:
 
     if result.validation:
         sections.append(_section_validation(result.validation))
+
+    if result.optimization:
+        sections.append(_section_optimization(result.optimization))
 
     sections.append(_section_diagnosis(result))
     sections.append(_section_suggestions(result))

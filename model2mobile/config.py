@@ -23,6 +23,7 @@ class RunConfig:
     benchmark_enabled: bool = True
     validation_enabled: bool = True
     codegen_enabled: bool = True
+    optimize_enabled: bool = False
 
     # Benchmark settings
     warmup_iterations: int = 5
@@ -42,6 +43,10 @@ class RunConfig:
     latency_threshold_ms: float = 100.0  # max acceptable inference latency
     fps_threshold: float = 15.0  # min acceptable FPS
     memory_threshold_mb: float = 500.0  # max acceptable peak memory
+
+    # Output control
+    verbose: bool = False
+    quiet: bool = False  # suppress intermediate output, show only final result
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> RunConfig:

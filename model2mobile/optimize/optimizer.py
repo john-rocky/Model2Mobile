@@ -6,6 +6,7 @@ import logging
 import shutil
 import tempfile
 import traceback
+import warnings
 from pathlib import Path
 
 import coremltools as ct
@@ -147,6 +148,7 @@ def run_optimization(
     Returns:
         OptimizationResult with all variant results and a recommendation.
     """
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
     original_size_mb = _get_model_size_mb(coreml_path)
 
     # Benchmark the original model

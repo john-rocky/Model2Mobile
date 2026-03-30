@@ -69,11 +69,13 @@ def main() -> None:
 @click.option("--no-validation", is_flag=True, help="Skip validation")
 @click.option("--compare-units", is_flag=True, help="Benchmark across all compute units")
 @click.option("--no-codegen", is_flag=True, help="Skip Swift code generation")
+@click.option("--optimize", "optimize_flag", is_flag=True, help="Run quantization optimization after conversion")
 @click.option("--warmup", default=5, type=int, help="Warmup iterations (default: 5)")
 @click.option("--iterations", default=20, type=int, help="Measurement iterations (default: 20)")
 @click.option("--device", "-d", default="local", type=click.Choice(["local", "iphone"]), help="Benchmark device (local Mac or connected iPhone)")
 @click.option("--config", "config_file", type=click.Path(exists=True), default=None, help="YAML config file")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose logging")
+@click.option("--quiet", "-q", is_flag=True, help="Suppress intermediate output, show only final result")
 def run(
     model: str,
     task: str,
@@ -84,11 +86,13 @@ def run(
     no_validation: bool,
     compare_units: bool,
     no_codegen: bool,
+    optimize_flag: bool,
     warmup: int,
     iterations: int,
     device: str,
     config_file: str | None,
     verbose: bool,
+    quiet: bool,
 ) -> None:
     """Run the full deployment readiness evaluation."""
     _setup_logging(verbose)
@@ -112,9 +116,12 @@ def run(
     config.validation_enabled = not no_validation
     config.compare_compute_units = compare_units
     config.codegen_enabled = not no_codegen
+    config.optimize_enabled = optimize_flag
     config.warmup_iterations = warmup
     config.measurement_iterations = iterations
     config.device = device
+    config.verbose = verbose
+    config.quiet = quiet
 
     from model2mobile.pipeline import run_pipeline
 
@@ -425,6 +432,210 @@ def optimize(
     console.print(f"[dim]JSON:   {json_path}[/dim]")
 
 
+# ---------------------------------------------------------------------------
+# Compare mode: side-by-side run comparison
+# ---------------------------------------------------------------------------
+
+
+def _load_run(run_dir: str) -> dict:
+    """Load and return parsed summary.json from a run directory."""
+    import json as _json
+
+    path = Path(run_dir) / "summary.json"
+    if not path.exists():
+        raise click.BadParameter(f"No summary.json in {run_dir}")
+    return _json.loads(path.read_text(encoding="utf-8"))
+
+
+def _safe_val(data: dict, *keys: str) -> object:
+    """Safely traverse nested dicts, returning None on missing keys."""
+    current: object = data
+    for k in keys:
+        if isinstance(current, dict):
+            current = current.get(k)
+        else:
+            return None
+    return current
+
+
+@main.command()
+@click.argument("run_a", type=click.Path(exists=True))
+@click.argument("run_b", type=click.Path(exists=True))
+@click.option("--output", "-o", default=None, help="Output HTML file path")
+def compare(run_a: str, run_b: str, output: str | None) -> None:
+    """Compare two run results side by side."""
+    from rich.panel import Panel
+    from rich.table import Table
+
+    data_a = _load_run(run_a)
+    data_b = _load_run(run_b)
+
+    label_a = Path(run_a).name
+    label_b = Path(run_b).name
+
+    # ------- Rich table for terminal -------
+    table = Table(
+        title="Run Comparison",
+        show_header=True,
+        header_style="bold cyan",
+        title_style="bold",
+    )
+    table.add_column("Metric", style="bold")
+    table.add_column(label_a, justify="right")
+    table.add_column(label_b, justify="right")
+    table.add_column("Delta", justify="right")
+
+    def _fmt(val: object, fmt: str = ".2f", suffix: str = "") -> str:
+        if val is None:
+            return "[dim]N/A[/dim]"
+        try:
+            return f"{float(val):{fmt}}{suffix}"
+        except (TypeError, ValueError):
+            return str(val)
+
+    def _add_metric(
+        label: str,
+        va: object,
+        vb: object,
+        fmt: str = ".2f",
+        suffix: str = "",
+        lower_is_better: bool = True,
+    ) -> None:
+        sa = _fmt(va, fmt, suffix)
+        sb = _fmt(vb, fmt, suffix)
+        if va is None or vb is None:
+            delta = "[dim]--[/dim]"
+        else:
+            try:
+                d = float(vb) - float(va)
+                sign = "+" if d > 0 else ""
+                if abs(d) < 1e-9:
+                    delta = f"[dim]0{suffix}[/dim]"
+                elif (lower_is_better and d < 0) or (not lower_is_better and d > 0):
+                    delta = f"[green]{sign}{d:{fmt}}{suffix}[/green]"
+                else:
+                    delta = f"[red]{sign}{d:{fmt}}{suffix}[/red]"
+            except (TypeError, ValueError):
+                delta = "[dim]--[/dim]"
+        table.add_row(label, sa, sb, delta)
+
+    def _add_str(label: str, va: object, vb: object) -> None:
+        sa = str(va) if va is not None else "N/A"
+        sb = str(vb) if vb is not None else "N/A"
+        if sa == sb:
+            delta = "[dim]--[/dim]"
+        else:
+            delta = "[yellow]differs[/yellow]"
+        table.add_row(label, sa, sb, delta)
+
+    # Readiness
+    _add_str("Readiness", data_a.get("readiness"), data_b.get("readiness"))
+
+    # Conversion
+    _add_str(
+        "Conversion",
+        _safe_val(data_a, "conversion", "success"),
+        _safe_val(data_b, "conversion", "success"),
+    )
+
+    # Model size (PyTorch)
+    _add_metric(
+        "PyTorch Size",
+        _safe_val(data_a, "model_info", "estimated_size_mb"),
+        _safe_val(data_b, "model_info", "estimated_size_mb"),
+        ".1f", " MB",
+    )
+
+    # Model size (CoreML)
+    _add_metric(
+        "CoreML Size",
+        _safe_val(data_a, "conversion", "coreml_size_mb"),
+        _safe_val(data_b, "conversion", "coreml_size_mb"),
+        ".1f", " MB",
+    )
+
+    # Inference latency
+    _add_metric(
+        "Inference Mean",
+        _safe_val(data_a, "benchmark", "inference", "mean_ms"),
+        _safe_val(data_b, "benchmark", "inference", "mean_ms"),
+        ".2f", " ms",
+    )
+    _add_metric(
+        "Inference P95",
+        _safe_val(data_a, "benchmark", "inference", "p95_ms"),
+        _safe_val(data_b, "benchmark", "inference", "p95_ms"),
+        ".2f", " ms",
+    )
+
+    # FPS (higher is better)
+    _add_metric(
+        "Estimated FPS",
+        _safe_val(data_a, "benchmark", "estimated_fps"),
+        _safe_val(data_b, "benchmark", "estimated_fps"),
+        ".1f", "",
+        lower_is_better=False,
+    )
+
+    # Validation
+    _add_str(
+        "Validation",
+        _safe_val(data_a, "validation", "status"),
+        _safe_val(data_b, "validation", "status"),
+    )
+
+    # Peak memory
+    _add_metric(
+        "Peak Memory",
+        _safe_val(data_a, "benchmark", "peak_memory_mb"),
+        _safe_val(data_b, "benchmark", "peak_memory_mb"),
+        ".1f", " MB",
+    )
+
+    # Bottleneck
+    def _bottleneck(data: dict) -> str:
+        diag = data.get("diagnosis", {})
+        primary = diag.get("primary_category", "unknown")
+        if primary and primary != "unknown":
+            return primary
+        if data.get("benchmark") and not data["benchmark"].get("success", True):
+            return "runtime_failure"
+        conv = data.get("conversion", {})
+        if not conv.get("success", True):
+            return "conversion_failure"
+        return "none"
+
+    _add_str("Main Bottleneck", _bottleneck(data_a), _bottleneck(data_b))
+
+    console.print()
+    console.print(table)
+    console.print()
+
+    # Readiness badge panel
+    r_a = data_a.get("readiness", "UNKNOWN")
+    r_b = data_b.get("readiness", "UNKNOWN")
+    r_color = {"READY": "green", "PARTIAL": "yellow", "NOT_READY": "red"}
+    console.print(
+        Panel.fit(
+            f"[{r_color.get(r_a, 'white')}]{r_a}[/{r_color.get(r_a, 'white')}]"
+            f"  ->  "
+            f"[{r_color.get(r_b, 'white')}]{r_b}[/{r_color.get(r_b, 'white')}]",
+            title=f"{label_a} vs {label_b}",
+            border_style="blue",
+        )
+    )
+
+    # ------- Optional HTML report -------
+    if output:
+        from model2mobile.report.comparison import generate_comparison_html
+
+        html = generate_comparison_html(data_a, data_b, label_a, label_b)
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(html, encoding="utf-8")
+        console.print(f"\n[green]HTML comparison report saved to {out_path}[/green]")
+
+
 @main.command()
 @click.option("--run-dir", "-d", required=True, type=click.Path(exists=True), help="Path to run output directory")
 @click.option("--format", "fmt", default="all", type=click.Choice(["markdown", "html", "json", "all"]))
@@ -442,5 +653,14 @@ def report(run_dir: str, fmt: str) -> None:
         console.print(f"[red]No summary.json found in {run_dir}[/red]")
         sys.exit(1)
 
-    console.print(f"Report regeneration from existing runs is available after initial run.")
-    console.print(f"Use 'model2mobile run' to generate initial reports.")
+    data = json.loads(summary_path.read_text(encoding="utf-8"))
+    result = RunResult.from_dict(data)
+
+    if fmt in ("markdown", "all"):
+        save_markdown(result, Path(run_dir))
+    if fmt in ("html", "all"):
+        save_html(result, Path(run_dir))
+    if fmt in ("json", "all"):
+        save_json_reports(result, Path(run_dir))
+
+    console.print(f"[green]Reports regenerated in {run_dir}[/green]")

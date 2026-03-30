@@ -167,6 +167,7 @@ class RunResult:
     diagnosis: DiagnosisResult
     benchmark: BenchmarkResult | None = None
     validation: ValidationResult | None = None
+    optimization: OptimizationResult | None = None
     suggestions: list[Suggestion] = field(default_factory=list)
     run_id: str = ""
     timestamp: str = ""
@@ -183,7 +184,142 @@ class RunResult:
         d["diagnosis"]["primary_category"] = self.diagnosis.primary_category.value
         for i, diag in enumerate(d["diagnosis"]["diagnoses"]):
             diag["category"] = self.diagnosis.diagnoses[i].category.value
+        if self.optimization:
+            d["optimization"] = self.optimization.to_dict()
         return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> RunResult:
+        """Reconstruct a RunResult from a JSON-compatible dict."""
+        readiness = ReadinessState(d.get("readiness", "NOT_READY"))
+
+        # Model info
+        mi = d.get("model_info", {})
+        model_info = ModelInfo(
+            path=mi.get("path", ""),
+            parameter_count=mi.get("parameter_count", 0),
+            input_shape=tuple(mi.get("input_shape", ())),
+            estimated_size_mb=mi.get("estimated_size_mb", 0.0),
+            architecture=mi.get("architecture", "unknown"),
+            has_dynamic_shapes=mi.get("has_dynamic_shapes", False),
+            op_summary=mi.get("op_summary", {}),
+        )
+
+        # Conversion
+        cv = d.get("conversion", {})
+        conversion = ConversionResult(
+            success=cv.get("success", False),
+            coreml_path=cv.get("coreml_path"),
+            coreml_size_mb=cv.get("coreml_size_mb", 0.0),
+            compute_unit=cv.get("compute_unit", "ALL"),
+            conversion_time_s=cv.get("conversion_time_s", 0.0),
+            error_message=cv.get("error_message"),
+            raw_error=cv.get("raw_error"),
+            warnings=cv.get("warnings", []),
+        )
+
+        # Diagnosis
+        dg = d.get("diagnosis", {})
+        diagnoses = []
+        for dd in dg.get("diagnoses", []):
+            diagnoses.append(Diagnosis(
+                category=DiagnosisCategory(dd.get("category", "unknown")),
+                raw_error=dd.get("raw_error", ""),
+                likely_cause=dd.get("likely_cause", ""),
+                suggested_steps=dd.get("suggested_steps", []),
+            ))
+        diagnosis = DiagnosisResult(
+            diagnoses=diagnoses,
+            primary_category=DiagnosisCategory(dg.get("primary_category", "unknown")),
+        )
+
+        # Benchmark
+        benchmark: BenchmarkResult | None = None
+        bm = d.get("benchmark")
+        if bm and isinstance(bm, dict):
+            benchmark = BenchmarkResult(
+                success=bm.get("success", False),
+                device_name=bm.get("device_name", "unknown"),
+                compute_unit=bm.get("compute_unit", "ALL"),
+                preprocess=LatencyStats(**bm["preprocess"]) if "preprocess" in bm else LatencyStats(),
+                inference=LatencyStats(**bm["inference"]) if "inference" in bm else LatencyStats(),
+                postprocess=LatencyStats(**bm["postprocess"]) if "postprocess" in bm else LatencyStats(),
+                end_to_end=LatencyStats(**bm["end_to_end"]) if "end_to_end" in bm else LatencyStats(),
+                estimated_fps=bm.get("estimated_fps", 0.0),
+                peak_memory_mb=bm.get("peak_memory_mb"),
+                warmup_iterations=bm.get("warmup_iterations", 0),
+                measurement_iterations=bm.get("measurement_iterations", 0),
+                error_message=bm.get("error_message"),
+                compute_unit_comparison=bm.get("compute_unit_comparison"),
+            )
+
+        # Validation
+        validation: ValidationResult | None = None
+        vl = d.get("validation")
+        if vl and isinstance(vl, dict) and "status" in vl:
+            checks = []
+            for vc in vl.get("checks", []):
+                checks.append(ValidationCheck(
+                    name=vc.get("name", ""),
+                    status=ValidationStatus(vc.get("status", "FAIL")),
+                    detail=vc.get("detail", ""),
+                    expected=vc.get("expected"),
+                    actual=vc.get("actual"),
+                    tolerance=vc.get("tolerance"),
+                ))
+            validation = ValidationResult(
+                status=ValidationStatus(vl["status"]),
+                checks=checks,
+                error_message=vl.get("error_message"),
+            )
+
+        # Optimization
+        optimization: OptimizationResult | None = None
+        opt = d.get("optimization")
+        if opt and isinstance(opt, dict):
+            variants = []
+            for ov in opt.get("variants", []):
+                variants.append(OptimizationVariant(
+                    name=ov.get("name", ""),
+                    strategy=ov.get("strategy", ""),
+                    model_size_mb=ov.get("model_size_mb", 0.0),
+                    inference_mean_ms=ov.get("inference_mean_ms", 0.0),
+                    inference_p95_ms=ov.get("inference_p95_ms", 0.0),
+                    estimated_fps=ov.get("estimated_fps", 0.0),
+                    size_reduction_pct=ov.get("size_reduction_pct", 0.0),
+                    speedup_pct=ov.get("speedup_pct", 0.0),
+                    error=ov.get("error"),
+                ))
+            optimization = OptimizationResult(
+                original_size_mb=opt.get("original_size_mb", 0.0),
+                original_inference_ms=opt.get("original_inference_ms", 0.0),
+                variants=variants,
+                recommended=opt.get("recommended", ""),
+                recommendation_reason=opt.get("recommendation_reason", ""),
+            )
+
+        # Suggestions
+        suggestions = []
+        for s in d.get("suggestions", []):
+            suggestions.append(Suggestion(
+                title=s.get("title", ""),
+                description=s.get("description", ""),
+                priority=s.get("priority", 0),
+            ))
+
+        return cls(
+            readiness=readiness,
+            model_info=model_info,
+            conversion=conversion,
+            diagnosis=diagnosis,
+            benchmark=benchmark,
+            validation=validation,
+            optimization=optimization,
+            suggestions=suggestions,
+            run_id=d.get("run_id", ""),
+            timestamp=d.get("timestamp", ""),
+            output_dir=d.get("output_dir", ""),
+        )
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, default=str)

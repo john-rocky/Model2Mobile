@@ -7,6 +7,7 @@ from pathlib import Path
 from model2mobile.models import (
     BenchmarkResult,
     LatencyStats,
+    OptimizationResult,
     ReadinessState,
     RunResult,
     ValidationResult,
@@ -449,6 +450,83 @@ def _section_suggestions(result: RunResult) -> str:
     return _card("Suggestions", body)
 
 
+def _section_optimization(optimization: OptimizationResult) -> str:
+    # Summary row
+    body = (
+        '<div class="summary-grid" style="margin-bottom:16px">'
+        f'<div class="summary-item">'
+        f'<div class="label">Original Size</div>'
+        f'<div class="value">{optimization.original_size_mb:.1f} MB</div>'
+        f'</div>'
+        f'<div class="summary-item">'
+        f'<div class="label">Original Inference</div>'
+        f'<div class="value">{optimization.original_inference_ms:.1f} ms</div>'
+        f'</div>'
+    )
+    if optimization.recommended and optimization.recommended != "none":
+        body += (
+            f'<div class="summary-item" style="border-color:var(--color-green)">'
+            f'<div class="label">Recommended</div>'
+            f'<div class="value" style="color:var(--color-green)">'
+            f'{_esc(optimization.recommended)}</div>'
+            f'</div>'
+        )
+    body += '</div>'
+
+    if optimization.recommendation_reason:
+        body += (
+            f'<p style="margin-bottom:12px;font-size:13px;color:var(--color-text-muted)">'
+            f'{_esc(optimization.recommendation_reason)}</p>'
+        )
+
+    # Comparison table
+    if optimization.variants:
+        body += (
+            '<table>'
+            '<tr><th>Variant</th><th>Size (MB)</th><th>Size Reduction</th>'
+            '<th>Inference (ms)</th><th>P95 (ms)</th><th>FPS</th>'
+            '<th>Speedup</th><th>Status</th></tr>'
+        )
+        for v in optimization.variants:
+            is_rec = v.name == optimization.recommended
+            name_display = _esc(v.name)
+            if is_rec:
+                name_display = f'<strong style="color:var(--color-green)">{name_display}</strong>'
+
+            if v.error:
+                body += (
+                    f'<tr><td>{name_display}</td>'
+                    f'<td colspan="6" style="color:var(--color-text-muted)">{_esc(v.error)}</td>'
+                    f'<td class="status-fail">FAILED</td></tr>'
+                )
+            else:
+                size_red_style = (
+                    'color:var(--color-green)' if v.size_reduction_pct > 0 else ''
+                )
+                speedup_style = (
+                    'color:var(--color-green)' if v.speedup_pct > 0
+                    else 'color:var(--color-yellow)' if v.speedup_pct < -5
+                    else ''
+                )
+                status = (
+                    '<span class="status-pass"><strong>RECOMMENDED</strong></span>'
+                    if is_rec else '<span class="status-pass">OK</span>'
+                )
+                body += (
+                    f'<tr><td>{name_display}</td>'
+                    f'<td class="mono">{v.model_size_mb:.1f}</td>'
+                    f'<td class="mono" style="{size_red_style}">{v.size_reduction_pct:+.1f}%</td>'
+                    f'<td class="mono">{v.inference_mean_ms:.2f}</td>'
+                    f'<td class="mono">{v.inference_p95_ms:.2f}</td>'
+                    f'<td class="mono">{v.estimated_fps:.1f}</td>'
+                    f'<td class="mono" style="{speedup_style}">{v.speedup_pct:+.1f}%</td>'
+                    f'<td>{status}</td></tr>'
+                )
+        body += '</table>'
+
+    return _card("Optimization Results", body)
+
+
 def _section_metadata(result: RunResult) -> str:
     rows = [
         _kv_row("Run ID", f"<code>{_esc(result.run_id)}</code>"),
@@ -476,6 +554,8 @@ def generate_html(result: RunResult) -> str:
         sections.append(_section_benchmark(result.benchmark))
     if result.validation:
         sections.append(_section_validation(result.validation))
+    if result.optimization:
+        sections.append(_section_optimization(result.optimization))
     sections.append(_section_diagnosis(result))
     sections.append(_section_suggestions(result))
     sections.append(_section_metadata(result))
