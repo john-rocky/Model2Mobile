@@ -2,21 +2,33 @@
 
 **Evaluate whether your PyTorch vision model is actually ready for on-device deployment.**
 
-Model2Mobile is a CLI tool that answers a simple question: *Can my model run on iPhone?*
+Model2Mobile answers a simple question: ***Can my model run on iPhone?***
 
-It goes beyond conversion — it evaluates deployment readiness by running conversion, benchmark, validation, and diagnosis in a single pipeline, then tells you whether your model is `READY`, `PARTIAL`, or `NOT_READY`, and what to do next.
+Give it a `.pt` file — local or URL — and get a deployment readiness verdict with benchmark numbers, validation results, and actionable next steps. No Core ML knowledge required.
 
-## What This Solves
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/b96c1aa0-890f-44df-9098-5044a169e155" alt="Model2Mobile HTML Report" width="700">
+</p>
 
-You have a PyTorch object detection model. You want to try it on iPhone. But you don't want to manually learn Core ML conversion details, debug cryptic errors, or wonder if the converted model actually behaves the same.
+---
 
-Model2Mobile handles the full evaluation:
+## Why Model2Mobile?
 
-- **Conversion** — Attempts Core ML conversion and classifies failures
-- **Benchmark** — Measures preprocess, inference, and postprocess latency separately
-- **Validation** — Compares PyTorch vs Core ML outputs for consistency
-- **Diagnosis** — Normalizes errors into actionable categories
-- **Report** — Generates human-readable summaries and machine-readable JSON
+Converting a model is not the same as deploying a model.
+
+A model can convert successfully but still be unusable — too slow, too much memory, wrong outputs, broken ops.  Model2Mobile evaluates the **full deployment path** in one command:
+
+| Step | What it checks |
+|------|----------------|
+| **Conversion** | Can PyTorch → Core ML succeed? If not, what op failed? |
+| **Benchmark** | How fast is inference? Where is the bottleneck? |
+| **Validation** | Does the converted model produce the same results? |
+| **Diagnosis** | What went wrong, classified into actionable categories |
+| **Suggestion** | What should you try next to fix it? |
+
+The output is not just a `.mlpackage` — it's a **readiness report** that tells you whether to ship, iterate, or rethink.
+
+---
 
 ## Quick Start
 
@@ -25,114 +37,145 @@ pip install -e .
 ```
 
 ```bash
-# Local file - input size auto-detected
+# Just point it at a model
 model2mobile run --model ./model.pt
 
-# URL - downloads automatically
-model2mobile run --model https://example.com/yolov8n.pt
-
-# Explicit input size
-model2mobile run --model ./model.pt --input-size 640
+# Or a URL — it downloads automatically
+model2mobile run --model https://example.com/model.pt
 ```
 
-One command gives you:
+That's it. Input size is auto-detected. Missing packages are auto-installed.
 
-- A readiness verdict (`READY` / `PARTIAL` / `NOT_READY`)
-- Benchmark breakdown by stage
-- Validation results
-- Diagnosed issues with suggested fixes
-- Full report (Markdown, HTML, JSON) in the output directory
+---
 
-## Readiness States
+## What You Get
+
+### Readiness Verdict
+
+Every run ends with one of three states:
 
 | State | Meaning |
 |-------|---------|
-| `READY` | Conversion, runtime, and validation all passed within acceptable thresholds |
-| `PARTIAL` | Some stages passed but there are warnings, performance issues, or validation concerns |
-| `NOT_READY` | Conversion failed, runtime failed, or validation failed critically |
+| `READY` | Conversion, runtime, and validation all passed within thresholds |
+| `PARTIAL` | Mostly works, but has warnings or performance concerns |
+| `NOT_READY` | Conversion failed, runtime crashed, or validation failed |
 
-Results are **scenario-specific** — they depend on your model, input size, device, and compute unit.
+### Benchmark Breakdown
 
-## CLI Modes
-
-### Primary: `run`
-
-Full pipeline in one command.
-
-```bash
-model2mobile run \
-  --model ./model.pt \
-  --task detect \
-  --input-size 640 \
-  --compute-unit ALL \
-  --compare-units
-```
-
-### Guided: `init`
-
-Interactive setup that walks you through configuration.
-
-```bash
-model2mobile init
-```
-
-### Expert: Individual Stages
-
-Run each stage independently.
-
-```bash
-# Convert only
-model2mobile convert --model ./model.pt --input-size 640
-
-# Benchmark an existing .mlpackage
-model2mobile benchmark --coreml ./model.mlpackage --input-size 640
-
-# Validate PyTorch vs Core ML
-model2mobile validate --model ./model.pt --coreml ./model.mlpackage
-```
-
-## Output Structure
-
-Each run produces a dedicated directory under `outputs/`:
+Latency is split by stage so you know **where** the bottleneck is:
 
 ```
-outputs/20240315_143022_a1b2c3/
-├── report.md          # Human-readable summary
+| Stage       | Mean (ms) | Median | P95   |
+|-------------|-----------|--------|-------|
+| Preprocess  | 0.88      | 0.87   | 0.98  |
+| Inference   | 29.6      | 29.1   | 31.2  |
+| Postprocess | 0.01      | 0.01   | 0.01  |
+| End-to-End  | 30.5      | 30.0   | 32.1  |
+
+Estimated FPS: 31.9
+```
+
+### Reports
+
+Each run generates a full output directory:
+
+```
+outputs/20260330_040703_368840/
 ├── report.html        # Visual report (open in browser)
+├── report.md          # Markdown summary
 ├── summary.json       # Full structured result
 ├── metrics.json       # Benchmark data
 ├── diagnosis.json     # Diagnosed issues
 ├── validation.json    # Validation checks
 ├── run.log            # Run metadata
-└── model.mlpackage    # Converted Core ML model (if successful)
+└── model.mlpackage    # Converted model (if successful)
 ```
 
-## Diagnosis Categories
+---
 
-When something fails, Model2Mobile classifies the issue:
+## Auto-Fix with Recipes
 
-| Category | Example |
+Model2Mobile doesn't just diagnose failures — it **fixes known problems automatically**.
+
+The recipe system contains accumulated knowledge about conversion pitfalls. When a model fails to convert, matching recipes patch the model and retry:
+
+```
+Stage 1/4: Converting to Core ML...
+  Applied recipes: detection_unwrap        ← auto-fixed before conversion
+  Conversion succeeded (7.2s, 61.9 MB)
+```
+
+Built-in recipes:
+
+| Recipe | What it fixes |
+|--------|--------------|
+| `detection_unwrap` | Detection models returning `List[Dict]` (FCOS, FasterRCNN, SSD, etc.) |
+| `nms_strip` | Removes NMS for on-device postprocessing |
+| `silu_replace` | Replaces SiLU with trace-friendly `x * sigmoid(x)` |
+| `dynamic_to_static` | Patches dynamic shape operations |
+
+Adding a new recipe is one file — the system gets smarter over time.
+
+---
+
+## CLI Modes
+
+### `run` — Full pipeline (primary)
+
+```bash
+model2mobile run --model ./model.pt
+model2mobile run --model ./model.pt --input-size 320 --compute-unit CPU_AND_NE
+model2mobile run --model ./model.pt --compare-units    # benchmark all compute units
+```
+
+### `init` — Interactive guided setup
+
+```bash
+model2mobile init
+```
+
+### Expert — Individual stages
+
+```bash
+model2mobile convert   --model ./model.pt
+model2mobile benchmark --coreml ./model.mlpackage
+model2mobile validate  --model ./model.pt --coreml ./model.mlpackage
+```
+
+---
+
+## Diagnosis
+
+When something fails, the error is classified — not just dumped:
+
+| Category | Meaning |
 |----------|---------|
-| `unsupported_op` | Model uses an operator Core ML can't convert |
-| `dynamic_shape` | Model has data-dependent tensor shapes |
-| `output_shape_mismatch` | Output shapes differ between PyTorch and Core ML |
-| `runtime_failure` | Core ML model fails during prediction |
-| `numeric_instability` | NaN/Inf values in converted model |
+| `unsupported_op` | Core ML can't convert an operator |
+| `dynamic_shape` | Data-dependent tensor shapes |
+| `output_shape_mismatch` | Shape divergence after conversion |
+| `runtime_failure` | Prediction crashes |
+| `numeric_instability` | NaN / Inf in outputs |
 | `postprocess_bottleneck` | Postprocessing slower than inference |
 | `memory_issue` | Excessive memory usage |
 
-Each diagnosis includes the raw error, likely cause, and suggested next steps.
+Each diagnosis includes a likely cause and suggested next steps.
 
-## Supported Scope (v1)
+---
 
-- **Input**: PyTorch models (`.pt`, `.pth`, TorchScript)
-- **Target**: Core ML (`.mlpackage`)
-- **Device**: Mac (local benchmark), iPhone (future)
-- **Task**: Object detection
+## How It Handles Any `.pt` File
+
+Model2Mobile is designed for users who just downloaded a model and want to try it:
+
+1. **URL support** — pass a URL instead of a file path
+2. **Auto-install** — if the `.pt` file needs `ultralytics`, `timm`, or any package, it's installed automatically
+3. **Auto-detect input size** — inferred from model attributes or trial forward passes
+4. **Auto-fix** — recipe system patches known issues before you even see an error
+
+---
 
 ## Configuration
 
-CLI flags, or a YAML config file:
+All options can be passed as CLI flags or in a YAML file:
 
 ```yaml
 model_path: ./model.pt
@@ -141,8 +184,6 @@ input_size: 640
 compute_unit: ALL
 benchmark_enabled: true
 validation_enabled: true
-warmup_iterations: 5
-measurement_iterations: 20
 latency_threshold_ms: 100.0
 fps_threshold: 15.0
 ```
@@ -151,28 +192,25 @@ fps_threshold: 15.0
 model2mobile run --model ./model.pt --config config.yaml
 ```
 
+---
+
 ## Requirements
 
-- Python >= 3.10
-- macOS (required for Core ML)
+- Python 3.10+
+- macOS (required for Core ML runtime)
 - PyTorch >= 2.0
 - coremltools >= 7.0
 
-## Project Structure
+---
 
-```
-model2mobile/
-├── convert/     # Core ML conversion
-├── benchmark/   # Performance measurement
-├── validate/    # PyTorch vs Core ML comparison
-├── diagnose/    # Error classification
-├── suggest/     # Next-action recommendations
-├── report/      # Markdown, JSON, HTML generation
-├── cli.py       # CLI entry point
-├── pipeline.py  # Run orchestration
-├── config.py    # Configuration model
-└── models.py    # Data models
-```
+## Scope (v1)
+
+- **Input**: PyTorch (`.pt`, `.pth`, TorchScript)
+- **Target**: Core ML (`.mlpackage`)
+- **Task**: Object detection
+- **Benchmark**: Local Mac (on-device iPhone support planned)
+
+---
 
 ## License
 
